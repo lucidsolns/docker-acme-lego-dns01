@@ -1,0 +1,81 @@
+#!/bin/bash
+#
+#  A script to coordinate running lego in a docker-compose environment
+#
+# see:
+#  - https://github.com/go-acme/lego
+#  - https://go-acme.github.io/lego/usage/cli/options/
+#  - https://go-acme.github.io/lego/dns/luadns/
+#  - https://go-acme.github.io/lego/dns/
+#  - https://jqplay.org/
+#
+
+# Create or renew a certificate for a domain.
+#
+# see
+#  https://stackoverflow.com/questions/918886/how-do-i-split-a-string-on-a-delimiter-in-bash
+function lego() {
+  DOMAINS=$1
+  CONTAINERS=$2
+
+  IFS=';' read -ra DOMAIN_ARRAY <<< "$IN"
+  BASE_DOMAIN=${DOMAIN_ARRAY[0]}
+
+  DOMAIN_ARGS=
+  for d in "${ADDR[@]}"; do
+    DOMAIN_ARGS="${DOMAIN_ARGS} --domain d"
+  done
+
+
+  DOMAIN_ARGS="--domains "${DOMAINS//,/ --domains }
+  DOMAIN_ARRAY=(${DOMAINS//,/ })
+  BASE_DOMAIN=${BASE_DOMAIN[0]}
+
+  if [ -s "/cert.d/certificates/${BASE_DOMAIN}.json" ] ; then
+    LEGO_COMMAND=--renew-hook "docker kill --signal=SIGHUP ${CONTAINERS}" renew
+  else
+    LEGO_COMMAND=--run-hook "docker kill --signal=SIGHUP ${CONTAINERS}" run
+  fi
+
+  /lego --server "${LEGO_SERVER}" \
+        --email "${LEGO_ACCOUNT_EMAIL}" \
+        --path "${LEGO_CERT_PATH:-/cert.d}" \
+        --accept-tos \
+        --dns ${LEGO_DNS01_PROVIDER:-luadns} \
+        ${DOMAIN_ARGS} \
+        ${LEGO_COMMAND}
+
+  DH_FILE="${LEGO_CERT_PATH:-/cert.d}/certificates/${BASE_DOMAIN}.dh"
+  if [ -n "${DHPARAM_SIZE}" ] && [ "${DHPARAM_SIZE}" -gt 0 ] ; then
+    if [ ! -f "${DH_FILE}" ] ||  [[ $(date +%s -r "${DH_FILE}" ) -lt $(date +%s --date="90 day ago") ]] ; then
+      echo "DH parameters old or not present, regenerating ${DHPARAM_SIZE:-4096} bit parameters"
+      openssl dhparam -rand - ${DHPARAM_SIZE:-4096} > "${DH_FILE}"
+      docker kill --signal=SIGHUP ${CONTAINERS}
+    fi
+  fi
+}
+
+# Dump information about the existing accounts and certificates
+/lego  --path "${LEGO_CERT_PATH:-/cert.d}" list --accounts
+
+# Get a list of all containers (regardless of whether they are running)
+ALL_CONTAINER_IDS=( $(docker ps --format '{{json .}}' --all  | jq --slurp -r '.[] | .ID') )
+
+unset CONTAINER_DOMAINS
+declare -A CONTAINER_DOMAINS
+for c in "${ALL_CONTAINER_IDS[@]}"; do
+    # Using the 'labels', get a list of certificate domains
+    DOMAINS=( $(docker inspect ${c} --format='{{json .Config.Labels}}' | jq -r 'to_entries | .[] | select(.key | test("^acme\\.dns01\\.lego\\.domain(\\.[0-9]+)?$"))| .value'))
+
+    # put the domains into an associative array to remove duplicates. Keep a note of the container
+    # id that wanted that wanted the certificate (so it can be notified when the certificate expires)
+    for d in "${DOMAINS[@]}"; do
+      CONTAINER_DOMAINS[${d}]="${CONTAINER_DOMAINS[${d}]} ${c}"
+    done
+done
+
+# For each domain, either create or renew the certificate
+for d in "${!CONTAINER_DOMAINS[@]}"; do
+  echo "Process domain ${d}"
+  lego "${d}" "CONTAINER_DOMAINS[${d}]"
+done
