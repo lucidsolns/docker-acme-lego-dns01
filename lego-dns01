@@ -9,6 +9,12 @@
 #  - https://go-acme.github.io/lego/dns/
 #  - https://jqplay.org/
 #
+set -eu
+
+if [ ! -S /var/run/docker.sock ] ; then
+  echo "The docker socket '/var/run/docker.sock' must be mounted"
+  exit 1
+fi
 
 if [ ! -n "${LEGO_DNS01_PROVIDER}" ] ; then
   echo "The LEGO_DNS01_PROVIDER environment variable must be set (see lego --dns option, e.g. 'luadns')"
@@ -51,6 +57,7 @@ function is_file_older(){
       return 1  # File is not older than the threshold
   fi
 }
+
 # Create or renew a certificate for a domain.
 #
 # see
@@ -77,7 +84,7 @@ function lego() {
   done
 
   # Check if the certificate has already been issued
-  HOOK_COMMAND="/usr/bin/docker kill --signal=SIGHUP ${CONTAINERS}"
+  HOOK_COMMAND="/hook ${CONTAINERS}"
   echo "Using hook command ${HOOK_COMMAND}"
   if [ -s "${LEGO_PATH}/certificates/${BASE_DOMAIN}.json" ] ; then
     LEGO_COMMAND+=("renew"  "--renew-hook" "${HOOK_COMMAND}" )
@@ -93,7 +100,7 @@ function lego() {
     if [ ! -s "${DH_FILE}" ] || is_file_older "${DH_FILE}" 90 ; then
       echo "DH parameters are old or not present, regenerating ${DHPARAM_SIZE} bit parameters"
       /usr/bin/openssl dhparam -out "${DH_FILE}" ${DHPARAM_SIZE}
-      /usr/bin/docker kill --signal=SIGHUP ${CONTAINERS}
+      /hook ${CONTAINERS}
     else
       echo "DH parameters '${DH_FILE}' are newer than 90 days and not being renewed"
     fi
@@ -122,7 +129,7 @@ for c in "${ALL_CONTAINER_IDS[@]}"; do
     # id that wanted that wanted the certificate (so it can be notified when the certificate expires)
     for d in "${DOMAINS[@]}"; do
       echo "Container ${c} requires certificate with domain(s) '${d}'"
-      CONTAINER_DOMAINS[${d}]="${CONTAINER_DOMAINS[${d}]} ${c}"
+      CONTAINER_DOMAINS[${d}]="${CONTAINER_DOMAINS[${d}]:-} ${c}"
     done
 done
 
@@ -131,3 +138,6 @@ for d in "${!CONTAINER_DOMAINS[@]}"; do
   echo "Process domain ${d}"
   lego "${d}" "${CONTAINER_DOMAINS[${d}]}"
 done
+
+echo Lego successful
+exit 0

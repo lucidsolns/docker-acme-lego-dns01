@@ -54,16 +54,15 @@ by luadns.
       - LEGO_DNS01_PROVIDER=luadns
       - LUADNS_API_USERNAME=<user@example.com>>
       - LUADNS_API_TOKEN=<xxxxxxxxxxxxxxxxxxx>
-      - LEGO_PATH=/cert.d
+      - LEGO_PATH=/.lego
       - DHPARAM_SIZE=2048
-      - LEGO_CERT_PATH=/cert.d
     volumes:
-      - /data/cert.d:/cert.d
+      - /data/lego:/.lego
       - /var/run/docker.sock:/var/run/docker.sock
 ```
 ## Dependent service
 
-Setup the service that requires the certificate in `docker-compose.yaml`.
+Setup the service that requires a certificate in `docker-compose.yaml`.
 
 The `depends_on` option should be used so that the service doesn't attempt
 to start until after the first run of the lego container, so that the 
@@ -82,6 +81,7 @@ container with a `SIGHUP` whenever the certificates/DH parameters change.
 container whether it is running or not - this tends to result in some
 errors that the container is not running.
 
+example:
 ```yaml
   ejabberd:
     image: ejabberd/ecs

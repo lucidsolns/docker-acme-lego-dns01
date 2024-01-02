@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+#  A simple hook script for Lego that send a HUP message to all
+#  containers that listed the certificate.
+#
+#  Note: the signal is not configurable, and the signal is sent to
+#  a container regardless of whether it is running or not.
+set -eu
+
+if /usr/bin/docker kill --signal=SIGHUP "$@" ; then
+  echo "Containers signalled"
+else
+  echo "Error signaling container"
+fi
+
+exit 0
