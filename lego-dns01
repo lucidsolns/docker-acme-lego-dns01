@@ -10,6 +10,47 @@
 #  - https://jqplay.org/
 #
 
+if [ ! -n "${LEGO_DNS01_PROVIDER}" ] ; then
+  echo "The LEGO_DNS01_PROVIDER environment variable must be set (see lego --dns option, e.g. 'luadns')"
+  exit 1
+fi
+
+if [ ! -n "${LEGO_SERVER}" ] ; then
+  echo "The LEGO_SERVER environment variable must be set (see lego --server option)"
+  exit 1
+fi
+
+if [ ! -n "${LEGO_ACCOUNT_EMAIL}" ] ; then
+  echo "The LEGO_ACCOUNT_EMAIL environment variable must be set (see lego --email option)"
+  exit 1
+fi
+
+if [ ! -n "${LEGO_PATH}" ] ; then
+  echo "The LEGO_PATH environment variable must be set (see lego --path option)"
+  exit 1
+fi
+
+function is_file_older(){
+  local file_path="$1"
+  local threshold_days=$2
+
+  current_time=$(date +%s)
+
+  # Get the file's last modification timestamp in seconds since the epoch
+  file_time=$(stat -c %Y "$file_path")
+
+  # Calculate the age of the file in seconds
+  file_age=$((current_time - file_time))
+
+  # Calculate the threshold in seconds
+  threshold=$((threshold_days * 24 * 60 * 60))
+
+  if [ "$file_age" -gt "$threshold" ]; then
+      return 0  # File is older than the threshold
+  else
+      return 1  # File is not older than the threshold
+  fi
+}
 # Create or renew a certificate for a domain.
 #
 # see
@@ -18,58 +59,69 @@ function lego() {
   DOMAINS=$1
   CONTAINERS=$2
 
-  IFS=';' read -ra DOMAIN_ARRAY <<< "$IN"
-  BASE_DOMAIN=${DOMAIN_ARRAY[0]}
+  # Rad the certificate domains from a CSV format into an array.
+  IFS=',' read -ra DOMAIN_ARRAY <<< "$DOMAINS"
+  BASE_DOMAIN="${DOMAIN_ARRAY[0]}"
 
-  DOMAIN_ARGS=
-  for d in "${ADDR[@]}"; do
-    DOMAIN_ARGS="${DOMAIN_ARGS} --domain d"
+  echo "Using primary certificate domain '${BASE_DOMAIN}'"
+
+  # Construct the command line arguments for 'lego'
+  LEGO_COMMAND=(
+      "--server" "${LEGO_SERVER}"
+      "--email" "${LEGO_ACCOUNT_EMAIL}"
+      "--path" "${LEGO_PATH}"
+      "--accept-tos"
+      "--dns" "${LEGO_DNS01_PROVIDER}" )
+  for d in "${DOMAIN_ARRAY[@]}"; do
+    LEGO_COMMAND+=( "--domains" "${d}" )
   done
 
-
-  DOMAIN_ARGS="--domains "${DOMAINS//,/ --domains }
-  DOMAIN_ARRAY=(${DOMAINS//,/ })
-  BASE_DOMAIN=${BASE_DOMAIN[0]}
-
-  if [ -s "/cert.d/certificates/${BASE_DOMAIN}.json" ] ; then
-    LEGO_COMMAND=--renew-hook "docker kill --signal=SIGHUP ${CONTAINERS}" renew
+  # Check if the certificate has already been issued
+  HOOK_COMMAND="/usr/bin/docker kill --signal=SIGHUP ${CONTAINERS}"
+  echo "Using hook command ${HOOK_COMMAND}"
+  if [ -s "${LEGO_PATH}/certificates/${BASE_DOMAIN}.json" ] ; then
+    LEGO_COMMAND+=("renew"  "--renew-hook" "${HOOK_COMMAND}" )
   else
-    LEGO_COMMAND=--run-hook "docker kill --signal=SIGHUP ${CONTAINERS}" run
+    LEGO_COMMAND+=("run" "--run-hook" "${HOOK_COMMAND}" )
   fi
 
-  /lego --server "${LEGO_SERVER}" \
-        --email "${LEGO_ACCOUNT_EMAIL}" \
-        --path "${LEGO_CERT_PATH:-/cert.d}" \
-        --accept-tos \
-        --dns ${LEGO_DNS01_PROVIDER:-luadns} \
-        ${DOMAIN_ARGS} \
-        ${LEGO_COMMAND}
+  echo "Lego command: lego" "${LEGO_COMMAND[@]}"
+  /lego "${LEGO_COMMAND[@]}"
 
-  DH_FILE="${LEGO_CERT_PATH:-/cert.d}/certificates/${BASE_DOMAIN}.dh"
+  DH_FILE="${LEGO_PATH}/certificates/${BASE_DOMAIN}.dh"
   if [ -n "${DHPARAM_SIZE}" ] && [ "${DHPARAM_SIZE}" -gt 0 ] ; then
-    if [ ! -f "${DH_FILE}" ] ||  [[ $(date +%s -r "${DH_FILE}" ) -lt $(date +%s --date="90 day ago") ]] ; then
-      echo "DH parameters old or not present, regenerating ${DHPARAM_SIZE:-4096} bit parameters"
-      openssl dhparam -rand - ${DHPARAM_SIZE:-4096} > "${DH_FILE}"
-      docker kill --signal=SIGHUP ${CONTAINERS}
+    if [ ! -s "${DH_FILE}" ] || is_file_older "${DH_FILE}" 90 ; then
+      echo "DH parameters are old or not present, regenerating ${DHPARAM_SIZE} bit parameters"
+      /usr/bin/openssl dhparam -out "${DH_FILE}" ${DHPARAM_SIZE}
+      /usr/bin/docker kill --signal=SIGHUP ${CONTAINERS}
+    else
+      echo "DH parameters '${DH_FILE}' are newer than 90 days and not being renewed"
     fi
   fi
 }
 
 # Dump information about the existing accounts and certificates
-/lego  --path "${LEGO_CERT_PATH:-/cert.d}" list --accounts
+/lego  --path "${LEGO_PATH}" list --accounts
 
 # Get a list of all containers (regardless of whether they are running)
-ALL_CONTAINER_IDS=( $(docker ps --format '{{json .}}' --all  | jq --slurp -r '.[] | .ID') )
+mapfile -t ALL_CONTAINER_IDS <<< "$( docker ps --all --format '{{json .}}' | jq --slurp -r '.[].ID' )"
+echo "Looking for label prefix 'acme.dns01.lego.domain' in ${#ALL_CONTAINER_IDS[@]} containers"
 
 unset CONTAINER_DOMAINS
 declare -A CONTAINER_DOMAINS
 for c in "${ALL_CONTAINER_IDS[@]}"; do
-    # Using the 'labels', get a list of certificate domains
-    DOMAINS=( $(docker inspect ${c} --format='{{json .Config.Labels}}' | jq -r 'to_entries | .[] | select(.key | test("^acme\\.dns01\\.lego\\.domain(\\.[0-9]+)?$"))| .value'))
+    # Using the 'labels', get a list of certificate domains. The label label 'acme.dns01.lego.domain'
+    # can have a numeric suffix if multiple certificates are required.
+    mapfile -t DOMAINS <<< "$( docker inspect ${c} --format='{{json .Config.Labels}}' | \
+          jq -r 'to_entries | .[] | select(.key | test("^acme\\.dns01\\.lego\\.domain(\\.[0-9]+)?$")) | .value' )"
+    # delete empty values
+    for i in "${!DOMAINS[@]}"; do [[ -z "${DOMAINS[i]}" ]] && unset DOMAINS[i] ; done
+    echo "Container ${c} has ${#DOMAINS[@]} domains"
 
     # put the domains into an associative array to remove duplicates. Keep a note of the container
     # id that wanted that wanted the certificate (so it can be notified when the certificate expires)
     for d in "${DOMAINS[@]}"; do
+      echo "Container ${c} requires certificate with domain(s) '${d}'"
       CONTAINER_DOMAINS[${d}]="${CONTAINER_DOMAINS[${d}]} ${c}"
     done
 done
@@ -77,5 +129,5 @@ done
 # For each domain, either create or renew the certificate
 for d in "${!CONTAINER_DOMAINS[@]}"; do
   echo "Process domain ${d}"
-  lego "${d}" "CONTAINER_DOMAINS[${d}]"
+  lego "${d}" "${CONTAINER_DOMAINS[${d}]}"
 done
