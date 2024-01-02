@@ -77,7 +77,7 @@ unique labels are used.
 With the labels present, the lego contain will signal the application service
 container with a `SIGHUP` whenever the certificates/DH parameters change.
 
-**Note:** When a certificate changes the HUP signal is sent blindly to the
+**Note:** When a certificate changes, the HUP signal is sent blindly to the
 container whether it is running or not - this tends to result in some
 errors that the container is not running.
 
@@ -144,3 +144,5 @@ WantedBy=multi-user.target
 - https://go-acme.github.io/lego/dns/luadns/
 - https://go-acme.github.io/lego/dns/
 - https://hub.docker.com/r/goacme/lego/
+- https://ghcr.io/lucidsolns/docker-acme-lego-dns01
+- https://github.com/lucidsolns/docker-acme-lego-dns01
