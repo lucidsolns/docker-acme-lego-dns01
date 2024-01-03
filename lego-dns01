@@ -100,7 +100,13 @@ function lego() {
     if [ ! -s "${DH_FILE}" ] || is_file_older "${DH_FILE}" 90 ; then
       echo "DH parameters are old or not present, regenerating ${DHPARAM_SIZE} bit parameters"
       /usr/bin/openssl dhparam -out "${DH_FILE}" ${DHPARAM_SIZE}
-      /hook ${CONTAINERS}
+
+      # run the hook script in a subsheel, setting environment variables
+      (
+          export LEGO_CERT_DOMAIN="${BASE_DOMAIN}";
+          export LEGO_DH_PARAMETERS_PATH="${DH_FILE}"
+          /hook ${CONTAINERS}
+      )
     else
       echo "DH parameters '${DH_FILE}' are newer than 90 days and not being renewed"
     fi

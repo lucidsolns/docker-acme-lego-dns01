@@ -75,11 +75,12 @@ then suffix each `acme.dns01.lego.domain` label with a number so that
 unique labels are used.
 
 With the labels present, the lego contain will signal the application service
-container with a `SIGHUP` whenever the certificates/DH parameters change.
+container with a `SIGHUP` (default is SIGHUP, or 'none' to suppress the signal)
+whenever the certificates/DH parameters change.
 
-**Note:** When a certificate changes, the HUP signal is sent blindly to the
-container whether it is running or not - this tends to result in some
-errors that the container is not running.
+An `install` script can be mounted in the 'lego' container to copy the
+certificates and/or set file ownership/permissions. The `install` script
+will be run prior to the container being signalled.
 
 example:
 ```yaml
@@ -91,6 +92,7 @@ example:
     labels:
       - acme.dns01.lego.domain.0=xmpp-server.example.com,example.com
       - acme.dns01.lego.domain.1=xmpp-client.example.com,example.com
+      - acme.dns01.lego.signal=SIGHUP
     ...
 ```
 ## Renew Timer
@@ -134,7 +136,6 @@ WantedBy=multi-user.target
 # Known residuals
 
 - the certificate key type isn't configurable
-- the signal sent on change is not configurable
 - testing with wildcard certificates has not been attempted
 
 # Links

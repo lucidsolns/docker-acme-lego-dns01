@@ -6,11 +6,56 @@
 #  Note: the signal is not configurable, and the signal is sent to
 #  a container regardless of whether it is running or not.
 set -eu
+export CONTAINERS="$1"
 
-if /usr/bin/docker kill --signal=SIGHUP "$@" ; then
-  echo "Containers signalled"
-else
-  echo "Error signaling container"
+# If an 'install' script (or binary) has been put into the container, then run
+# the install with environment variables:
+#
+# all phases (including DH parameters):
+#    CONTAINERS
+#    LEGO_CERT_DOMAIN
+# renew/run variables:
+#    LEGO_ACCOUNT_EMAIL
+#    LEGO_CERT_PATH
+#    LEGO_CERT_KEY_PATH
+#    LEGO_CERT_PEM_PATH
+#    LEGO_CERT_PFX_PATH
+# Dh parameters:
+#    LEGO_DH_PARAMETERS_PATH
+#
+if [ -x /install ] ; then
+  echo "Run install script for domain '${LEGO_CERT_DOMAIN}' for containers ${CONTAINERS}"
+  if /install ; then
+    echo Install script completed
+  else
+    echo Install script failed
+    exit 3
+  fi
 fi
+
+#
+# Signal the docker containers that listed the certificate names in their labels
+# with a HUP so they can reload certificates.
+#
+read -ra CONTAINER_IDS <<< "$CONTAINERS"
+for c in "${CONTAINER_IDS[@]}"; do
+  # Query the container for its running state
+  running=$(  docker inspect "${c}" --format='{{json .State.Running}}' )
+  if [ "${running}" == "true" ] ; then
+    # Query the container for an optional signal name to send (default is SIGHUP)
+    signal=$( docker inspect "${c}" --format='{{index .Config.Labels "acme.dns01.lego.signal" }}' )
+    if [ "${signal}" != "none" ] ; then
+      if /usr/bin/docker kill --signal="${signal:-SIGHUP}" "${c}" ; then
+        echo "Containers signalled"
+      else
+        echo "Error signaling container ${c} with ${signal:-SIGHUP}"
+      fi
+    else
+      echo "Container ${c} configured to not receive a signal"
+    fi
+  else
+    echo "Docker container ${c} not running - signal not sent"
+  fi
+done
 
 exit 0
